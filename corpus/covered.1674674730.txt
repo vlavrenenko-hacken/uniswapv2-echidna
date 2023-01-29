@@ -1,0 +1,1492 @@
+/home/v_lnko/WebstormProjects/Job/Web3/uniswapv2-echidna/v2-periphery/contracts/UniswapV2Router02.sol
+   1 |     | // SPDX-License-Identifier: MIT
+   2 |     | pragma solidity 0.8.13;
+   3 |     | 
+   4 |     | import './interfaces/IUniswapV2Router02.sol';
+   5 |     | import './libraries/UniswapV2Library.sol';
+   6 |     | import './interfaces/IERC20.sol';
+   7 |     | import './interfaces/IWETH.sol';
+   8 |     | 
+   9 |     | interface IUniswapV2Factory {
+  10 |     |     event PairCreated(address indexed token0, address indexed token1, address pair, uint);
+  11 |     | 
+  12 |     |     function feeTo() external view returns (address);
+  13 |     |     function feeToSetter() external view returns (address);
+  14 |     | 
+  15 |     |     function getPair(address tokenA, address tokenB) external view returns (address pair);
+  16 |     |     function allPairs(uint) external view returns (address pair);
+  17 |     |     function allPairsLength() external view returns (uint);
+  18 |     | 
+  19 |     |     function createPair(address tokenA, address tokenB) external returns (address pair);
+  20 |     | 
+  21 |     |     function setFeeTo(address) external;
+  22 |     |     function setFeeToSetter(address) external;
+  23 |     | }
+  24 |     | 
+  25 |     | library TransferHelper {
+  26 |     |     function safeApprove(
+  27 |     |         address token,
+  28 |     |         address to,
+  29 |     |         uint256 value
+  30 |     |     ) internal {
+  31 |     |         // bytes4(keccak256(bytes('approve(address,uint256)')));
+  32 |     |         (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x095ea7b3, to, value));
+  33 |     |         require(
+  34 |     |             success && (data.length == 0 || abi.decode(data, (bool))),
+  35 |     |             'TransferHelper::safeApprove: approve failed'
+  36 |     |         );
+  37 |     |     }
+  38 |     | 
+  39 |     |     function safeTransfer(
+  40 |     |         address token,
+  41 |     |         address to,
+  42 |     |         uint256 value
+  43 |     |     ) internal {
+  44 |     |         // bytes4(keccak256(bytes('transfer(address,uint256)')));
+  45 |     |         (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0xa9059cbb, to, value));
+  46 |     |         require(
+  47 |     |             success && (data.length == 0 || abi.decode(data, (bool))),
+  48 |     |             'TransferHelper::safeTransfer: transfer failed'
+  49 |     |         );
+  50 |     |     }
+  51 |     | 
+  52 |     |     function safeTransferFrom(
+  53 |     |         address token,
+  54 |     |         address from,
+  55 |     |         address to,
+  56 |     |         uint256 value
+  57 |     |     ) internal {
+  58 |     |         // bytes4(keccak256(bytes('transferFrom(address,address,uint256)')));
+  59 |     |         (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x23b872dd, from, to, value));
+  60 |     |         require(
+  61 |     |             success && (data.length == 0 || abi.decode(data, (bool))),
+  62 |     |             'TransferHelper::transferFrom: transferFrom failed'
+  63 |     |         );
+  64 |     |     }
+  65 |     | 
+  66 |     |     function safeTransferETH(address to, uint256 value) internal {
+  67 |     |         (bool success, ) = to.call{value: value}(new bytes(0));
+  68 |     |         require(success, 'TransferHelper::safeTransferETH: ETH transfer failed');
+  69 |     |     }
+  70 |     | }
+  71 |     | 
+  72 |     | contract UniswapV2Router02 is IUniswapV2Router02 {
+  73 |     | 
+  74 |     |     address public immutable override factory;
+  75 |     |     address public immutable override WETH;
+  76 |     | 
+  77 |     |     modifier ensure(uint deadline) {
+  78 |     |         require(deadline >= block.timestamp, 'UniswapV2Router: EXPIRED');
+  79 |     |         _;
+  80 |     |     }
+  81 |     | 
+  82 |     |     constructor(address _factory, address _WETH) {
+  83 |     |         factory = _factory;
+  84 |     |         WETH = _WETH;
+  85 |     |     }
+  86 |     | 
+  87 |     |     receive() external payable {
+  88 |     |         assert(msg.sender == WETH); // only accept ETH via fallback from the WETH contract
+  89 |     |     }
+  90 |     | 
+  91 |     |     // **** ADD LIQUIDITY ****
+  92 |     |     function _addLiquidity(
+  93 |     |         address tokenA,
+  94 |     |         address tokenB,
+  95 |     |         uint amountADesired,
+  96 |     |         uint amountBDesired,
+  97 |     |         uint amountAMin,
+  98 |     |         uint amountBMin
+  99 |     |     ) internal virtual returns (uint amountA, uint amountB) {
+ 100 |     |         // create the pair if it doesn't exist yet
+ 101 |     |         if (IUniswapV2Factory(factory).getPair(tokenA, tokenB) == address(0)) {
+ 102 |     |             IUniswapV2Factory(factory).createPair(tokenA, tokenB);
+ 103 |     |         }
+ 104 |     |         (uint reserveA, uint reserveB) = UniswapV2Library.getReserves(factory, tokenA, tokenB);
+ 105 |     |         if (reserveA == 0 && reserveB == 0) {
+ 106 |     |             (amountA, amountB) = (amountADesired, amountBDesired);
+ 107 |     |         } else {
+ 108 |     |             uint amountBOptimal = UniswapV2Library.quote(amountADesired, reserveA, reserveB);
+ 109 |     |             if (amountBOptimal <= amountBDesired) {
+ 110 |     |                 require(amountBOptimal >= amountBMin, 'UniswapV2Router: INSUFFICIENT_B_AMOUNT');
+ 111 |     |                 (amountA, amountB) = (amountADesired, amountBOptimal);
+ 112 |     |             } else {
+ 113 |     |                 uint amountAOptimal = UniswapV2Library.quote(amountBDesired, reserveB, reserveA);
+ 114 |     |                 assert(amountAOptimal <= amountADesired);
+ 115 |     |                 require(amountAOptimal >= amountAMin, 'UniswapV2Router: INSUFFICIENT_A_AMOUNT');
+ 116 |     |                 (amountA, amountB) = (amountAOptimal, amountBDesired);
+ 117 |     |             }
+ 118 |     |         }
+ 119 |     |     }
+ 120 |     |     function addLiquidity(
+ 121 |     |         address tokenA,
+ 122 |     |         address tokenB,
+ 123 |     |         uint amountADesired,
+ 124 |     |         uint amountBDesired,
+ 125 |     |         uint amountAMin,
+ 126 |     |         uint amountBMin,
+ 127 |     |         address to,
+ 128 |     |         uint deadline
+ 129 |     |     ) external virtual override ensure(deadline) returns (uint amountA, uint amountB, uint liquidity) {
+ 130 |     |         (amountA, amountB) = _addLiquidity(tokenA, tokenB, amountADesired, amountBDesired, amountAMin, amountBMin);
+ 131 |     |         address pair = UniswapV2Library.pairFor(factory, tokenA, tokenB);
+ 132 |     |         TransferHelper.safeTransferFrom(tokenA, msg.sender, pair, amountA);
+ 133 |     |         TransferHelper.safeTransferFrom(tokenB, msg.sender, pair, amountB);
+ 134 |     |         liquidity = IUniswapV2Pair(pair).mint(to);
+ 135 |     |     }
+ 136 |     |     function addLiquidityETH(
+ 137 |     |         address token,
+ 138 |     |         uint amountTokenDesired,
+ 139 |     |         uint amountTokenMin,
+ 140 |     |         uint amountETHMin,
+ 141 |     |         address to,
+ 142 |     |         uint deadline
+ 143 |     |     ) external virtual override payable ensure(deadline) returns (uint amountToken, uint amountETH, uint liquidity) {
+ 144 |     |         (amountToken, amountETH) = _addLiquidity(
+ 145 |     |             token,
+ 146 |     |             WETH,
+ 147 |     |             amountTokenDesired,
+ 148 |     |             msg.value,
+ 149 |     |             amountTokenMin,
+ 150 |     |             amountETHMin
+ 151 |     |         );
+ 152 |     |         address pair = UniswapV2Library.pairFor(factory, token, WETH);
+ 153 |     |         TransferHelper.safeTransferFrom(token, msg.sender, pair, amountToken);
+ 154 |     |         IWETH(WETH).deposit{value: amountETH}();
+ 155 |     |         assert(IWETH(WETH).transfer(pair, amountETH));
+ 156 |     |         liquidity = IUniswapV2Pair(pair).mint(to);
+ 157 |     |         // refund dust eth, if any
+ 158 |     |         if (msg.value > amountETH) TransferHelper.safeTransferETH(msg.sender, msg.value - amountETH);
+ 159 |     |     }
+ 160 |     | 
+ 161 |     |     // **** REMOVE LIQUIDITY ****
+ 162 |     |     function removeLiquidity(
+ 163 |     |         address tokenA,
+ 164 |     |         address tokenB,
+ 165 |     |         uint liquidity,
+ 166 |     |         uint amountAMin,
+ 167 |     |         uint amountBMin,
+ 168 |     |         address to,
+ 169 |     |         uint deadline
+ 170 |     |     ) public virtual override ensure(deadline) returns (uint amountA, uint amountB) {
+ 171 |     |         address pair = UniswapV2Library.pairFor(factory, tokenA, tokenB);
+ 172 |     |         IUniswapV2Pair(pair).transferFrom(msg.sender, pair, liquidity); // send liquidity to pair
+ 173 |     |         (uint amount0, uint amount1) = IUniswapV2Pair(pair).burn(to);
+ 174 |     |         (address token0,) = UniswapV2Library.sortTokens(tokenA, tokenB);
+ 175 |     |         (amountA, amountB) = tokenA == token0 ? (amount0, amount1) : (amount1, amount0);
+ 176 |     |         require(amountA >= amountAMin, 'UniswapV2Router: INSUFFICIENT_A_AMOUNT');
+ 177 |     |         require(amountB >= amountBMin, 'UniswapV2Router: INSUFFICIENT_B_AMOUNT');
+ 178 |     |     }
+ 179 |     |     function removeLiquidityETH(
+ 180 |     |         address token,
+ 181 |     |         uint liquidity,
+ 182 |     |         uint amountTokenMin,
+ 183 |     |         uint amountETHMin,
+ 184 |     |         address to,
+ 185 |     |         uint deadline
+ 186 |     |     ) public virtual override ensure(deadline) returns (uint amountToken, uint amountETH) {
+ 187 |     |         (amountToken, amountETH) = removeLiquidity(
+ 188 |     |             token,
+ 189 |     |             WETH,
+ 190 |     |             liquidity,
+ 191 |     |             amountTokenMin,
+ 192 |     |             amountETHMin,
+ 193 |     |             address(this),
+ 194 |     |             deadline
+ 195 |     |         );
+ 196 |     |         TransferHelper.safeTransfer(token, to, amountToken);
+ 197 |     |         IWETH(WETH).withdraw(amountETH);
+ 198 |     |         TransferHelper.safeTransferETH(to, amountETH);
+ 199 |     |     }
+ 200 |     |     function removeLiquidityWithPermit(
+ 201 |     |         address tokenA,
+ 202 |     |         address tokenB,
+ 203 |     |         uint liquidity,
+ 204 |     |         uint amountAMin,
+ 205 |     |         uint amountBMin,
+ 206 |     |         address to,
+ 207 |     |         uint deadline,
+ 208 |     |         bool approveMax, uint8 v, bytes32 r, bytes32 s
+ 209 |     |     ) external virtual override returns (uint amountA, uint amountB) {
+ 210 |     |         address pair = UniswapV2Library.pairFor(factory, tokenA, tokenB);
+ 211 |     |         uint value = approveMax ? ~uint(0) : liquidity;
+ 212 |     |         IUniswapV2Pair(pair).permit(msg.sender, address(this), value, deadline, v, r, s);
+ 213 |     |         (amountA, amountB) = removeLiquidity(tokenA, tokenB, liquidity, amountAMin, amountBMin, to, deadline);
+ 214 |     |     }
+ 215 |     |     function removeLiquidityETHWithPermit(
+ 216 |     |         address token,
+ 217 |     |         uint liquidity,
+ 218 |     |         uint amountTokenMin,
+ 219 |     |         uint amountETHMin,
+ 220 |     |         address to,
+ 221 |     |         uint deadline,
+ 222 |     |         bool approveMax, uint8 v, bytes32 r, bytes32 s
+ 223 |     |     ) external virtual override returns (uint amountToken, uint amountETH) {
+ 224 |     |         address pair = UniswapV2Library.pairFor(factory, token, WETH);
+ 225 |     |         uint value = approveMax ? ~uint(0) : liquidity;
+ 226 |     |         IUniswapV2Pair(pair).permit(msg.sender, address(this), value, deadline, v, r, s);
+ 227 |     |         (amountToken, amountETH) = removeLiquidityETH(token, liquidity, amountTokenMin, amountETHMin, to, deadline);
+ 228 |     |     }
+ 229 |     | 
+ 230 |     |     // **** REMOVE LIQUIDITY (supporting fee-on-transfer tokens) ****
+ 231 |     |     function removeLiquidityETHSupportingFeeOnTransferTokens(
+ 232 |     |         address token,
+ 233 |     |         uint liquidity,
+ 234 |     |         uint amountTokenMin,
+ 235 |     |         uint amountETHMin,
+ 236 |     |         address to,
+ 237 |     |         uint deadline
+ 238 |     |     ) public virtual override ensure(deadline) returns (uint amountETH) {
+ 239 |     |         (, amountETH) = removeLiquidity(
+ 240 |     |             token,
+ 241 |     |             WETH,
+ 242 |     |             liquidity,
+ 243 |     |             amountTokenMin,
+ 244 |     |             amountETHMin,
+ 245 |     |             address(this),
+ 246 |     |             deadline
+ 247 |     |         );
+ 248 |     |         TransferHelper.safeTransfer(token, to, IERC20(token).balanceOf(address(this)));
+ 249 |     |         IWETH(WETH).withdraw(amountETH);
+ 250 |     |         TransferHelper.safeTransferETH(to, amountETH);
+ 251 |     |     }
+ 252 |     |     function removeLiquidityETHWithPermitSupportingFeeOnTransferTokens(
+ 253 |     |         address token,
+ 254 |     |         uint liquidity,
+ 255 |     |         uint amountTokenMin,
+ 256 |     |         uint amountETHMin,
+ 257 |     |         address to,
+ 258 |     |         uint deadline,
+ 259 |     |         bool approveMax, uint8 v, bytes32 r, bytes32 s
+ 260 |     |     ) external virtual override returns (uint amountETH) {
+ 261 |     |         address pair = UniswapV2Library.pairFor(factory, token, WETH);
+ 262 |     |         uint value = approveMax ? ~uint(0) : liquidity;
+ 263 |     |         IUniswapV2Pair(pair).permit(msg.sender, address(this), value, deadline, v, r, s);
+ 264 |     |         amountETH = removeLiquidityETHSupportingFeeOnTransferTokens(
+ 265 |     |             token, liquidity, amountTokenMin, amountETHMin, to, deadline
+ 266 |     |         );
+ 267 |     |     }
+ 268 |     | 
+ 269 |     |     // **** SWAP ****
+ 270 |     |     // requires the initial amount to have already been sent to the first pair
+ 271 |     |     function _swap(uint[] memory amounts, address[] memory path, address _to) internal virtual {
+ 272 |     |         for (uint i; i < path.length - 1; i++) {
+ 273 |     |             (address input, address output) = (path[i], path[i + 1]);
+ 274 |     |             (address token0,) = UniswapV2Library.sortTokens(input, output);
+ 275 |     |             uint amountOut = amounts[i + 1];
+ 276 |     |             (uint amount0Out, uint amount1Out) = input == token0 ? (uint(0), amountOut) : (amountOut, uint(0));
+ 277 |     |             address to = i < path.length - 2 ? UniswapV2Library.pairFor(factory, output, path[i + 2]) : _to;
+ 278 |     |             IUniswapV2Pair(UniswapV2Library.pairFor(factory, input, output)).swap(
+ 279 |     |                 amount0Out, amount1Out, to, new bytes(0)
+ 280 |     |             );
+ 281 |     |         }
+ 282 |     |     }
+ 283 |     |     function swapExactTokensForTokens(
+ 284 |     |         uint amountIn,
+ 285 |     |         uint amountOutMin,
+ 286 |     |         address[] calldata path,
+ 287 |     |         address to,
+ 288 |     |         uint deadline
+ 289 |     |     ) external virtual override ensure(deadline) returns (uint[] memory amounts) {
+ 290 |     |         amounts = UniswapV2Library.getAmountsOut(factory, amountIn, path);
+ 291 |     |         require(amounts[amounts.length - 1] >= amountOutMin, 'UniswapV2Router: INSUFFICIENT_OUTPUT_AMOUNT');
+ 292 |     |         TransferHelper.safeTransferFrom(
+ 293 |     |             path[0], msg.sender, UniswapV2Library.pairFor(factory, path[0], path[1]), amounts[0]
+ 294 |     |         );
+ 295 |     |         _swap(amounts, path, to);
+ 296 |     |     }
+ 297 |     |     function swapTokensForExactTokens(
+ 298 |     |         uint amountOut,
+ 299 |     |         uint amountInMax,
+ 300 |     |         address[] calldata path,
+ 301 |     |         address to,
+ 302 |     |         uint deadline
+ 303 |     |     ) external virtual override ensure(deadline) returns (uint[] memory amounts) {
+ 304 |     |         amounts = UniswapV2Library.getAmountsIn(factory, amountOut, path);
+ 305 |     |         require(amounts[0] <= amountInMax, 'UniswapV2Router: EXCESSIVE_INPUT_AMOUNT');
+ 306 |     |         TransferHelper.safeTransferFrom(
+ 307 |     |             path[0], msg.sender, UniswapV2Library.pairFor(factory, path[0], path[1]), amounts[0]
+ 308 |     |         );
+ 309 |     |         _swap(amounts, path, to);
+ 310 |     |     }
+ 311 |     |     function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline)
+ 312 |     |         external
+ 313 |     |         virtual
+ 314 |     |         override
+ 315 |     |         payable
+ 316 |     |         ensure(deadline)
+ 317 |     |         returns (uint[] memory amounts)
+ 318 |     |     {
+ 319 |     |         require(path[0] == WETH, 'UniswapV2Router: INVALID_PATH');
+ 320 |     |         amounts = UniswapV2Library.getAmountsOut(factory, msg.value, path);
+ 321 |     |         require(amounts[amounts.length - 1] >= amountOutMin, 'UniswapV2Router: INSUFFICIENT_OUTPUT_AMOUNT');
+ 322 |     |         IWETH(WETH).deposit{value: amounts[0]}();
+ 323 |     |         assert(IWETH(WETH).transfer(UniswapV2Library.pairFor(factory, path[0], path[1]), amounts[0]));
+ 324 |     |         _swap(amounts, path, to);
+ 325 |     |     }
+ 326 |     |     function swapTokensForExactETH(uint amountOut, uint amountInMax, address[] calldata path, address to, uint deadline)
+ 327 |     |         external
+ 328 |     |         virtual
+ 329 |     |         override
+ 330 |     |         ensure(deadline)
+ 331 |     |         returns (uint[] memory amounts)
+ 332 |     |     {
+ 333 |     |         require(path[path.length - 1] == WETH, 'UniswapV2Router: INVALID_PATH');
+ 334 |     |         amounts = UniswapV2Library.getAmountsIn(factory, amountOut, path);
+ 335 |     |         require(amounts[0] <= amountInMax, 'UniswapV2Router: EXCESSIVE_INPUT_AMOUNT');
+ 336 |     |         TransferHelper.safeTransferFrom(
+ 337 |     |             path[0], msg.sender, UniswapV2Library.pairFor(factory, path[0], path[1]), amounts[0]
+ 338 |     |         );
+ 339 |     |         _swap(amounts, path, address(this));
+ 340 |     |         IWETH(WETH).withdraw(amounts[amounts.length - 1]);
+ 341 |     |         TransferHelper.safeTransferETH(to, amounts[amounts.length - 1]);
+ 342 |     |     }
+ 343 |     |     function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline)
+ 344 |     |         external
+ 345 |     |         virtual
+ 346 |     |         override
+ 347 |     |         ensure(deadline)
+ 348 |     |         returns (uint[] memory amounts)
+ 349 |     |     {
+ 350 |     |         require(path[path.length - 1] == WETH, 'UniswapV2Router: INVALID_PATH');
+ 351 |     |         amounts = UniswapV2Library.getAmountsOut(factory, amountIn, path);
+ 352 |     |         require(amounts[amounts.length - 1] >= amountOutMin, 'UniswapV2Router: INSUFFICIENT_OUTPUT_AMOUNT');
+ 353 |     |         TransferHelper.safeTransferFrom(
+ 354 |     |             path[0], msg.sender, UniswapV2Library.pairFor(factory, path[0], path[1]), amounts[0]
+ 355 |     |         );
+ 356 |     |         _swap(amounts, path, address(this));
+ 357 |     |         IWETH(WETH).withdraw(amounts[amounts.length - 1]);
+ 358 |     |         TransferHelper.safeTransferETH(to, amounts[amounts.length - 1]);
+ 359 |     |     }
+ 360 |     |     function swapETHForExactTokens(uint amountOut, address[] calldata path, address to, uint deadline)
+ 361 |     |         external
+ 362 |     |         virtual
+ 363 |     |         override
+ 364 |     |         payable
+ 365 |     |         ensure(deadline)
+ 366 |     |         returns (uint[] memory amounts)
+ 367 |     |     {
+ 368 |     |         require(path[0] == WETH, 'UniswapV2Router: INVALID_PATH');
+ 369 |     |         amounts = UniswapV2Library.getAmountsIn(factory, amountOut, path);
+ 370 |     |         require(amounts[0] <= msg.value, 'UniswapV2Router: EXCESSIVE_INPUT_AMOUNT');
+ 371 |     |         IWETH(WETH).deposit{value: amounts[0]}();
+ 372 |     |         assert(IWETH(WETH).transfer(UniswapV2Library.pairFor(factory, path[0], path[1]), amounts[0]));
+ 373 |     |         _swap(amounts, path, to);
+ 374 |     |         // refund dust eth, if any
+ 375 |     |         if (msg.value > amounts[0]) TransferHelper.safeTransferETH(msg.sender, msg.value - amounts[0]);
+ 376 |     |     }
+ 377 |     | 
+ 378 |     |     // **** SWAP (supporting fee-on-transfer tokens) ****
+ 379 |     |     // requires the initial amount to have already been sent to the first pair
+ 380 |     |     // function _swapSupportingFeeOnTransferTokens(address[] memory path, address _to) internal virtual {
+ 381 |     |     //     for (uint i; i < path.length - 1; i++) {
+ 382 |     |     //         (address input, address output) = (path[i], path[i + 1]);
+ 383 |     |     //         (address token0,) = UniswapV2Library.sortTokens(input, output);
+ 384 |     |     //         IUniswapV2Pair pair = IUniswapV2Pair(UniswapV2Library.pairFor(factory, input, output));
+ 385 |     |     //         uint amountInput;
+ 386 |     |     //         uint amountOutput;
+ 387 |     |     //         { // scope to avoid stack too deep errors
+ 388 |     |     //         (uint reserve0, uint reserve1,) = pair.getReserves();
+ 389 |     |     //         (uint reserveInput, uint reserveOutput) = input == token0 ? (reserve0, reserve1) : (reserve1, reserve0);
+ 390 |     |     //         amountInput = IERC20(input).balanceOf(address(pair)) - reserveInput;
+ 391 |     |     //         amountOutput = UniswapV2Library.getAmountOut(amountInput, reserveInput, reserveOutput);
+ 392 |     |     //         }
+ 393 |     |     //         (uint amount0Out, uint amount1Out) = input == token0 ? (uint(0), amountOutput) : (amountOutput, uint(0));
+ 394 |     |     //         address to = i < path.length - 2 ? UniswapV2Library.pairFor(factory, output, path[i + 2]) : _to;
+ 395 |     |     //         pair.swap(amount0Out, amount1Out, to, new bytes(0));
+ 396 |     |     //     }
+ 397 |     |     // }
+ 398 |     |     // function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+ 399 |     |     //     uint amountIn,
+ 400 |     |     //     uint amountOutMin,
+ 401 |     |     //     address[] calldata path,
+ 402 |     |     //     address to,
+ 403 |     |     //     uint deadline
+ 404 |     |     // ) external virtual override ensure(deadline) {
+ 405 |     |     //     TransferHelper.safeTransferFrom(
+ 406 |     |     //         path[0], msg.sender, UniswapV2Library.pairFor(factory, path[0], path[1]), amountIn
+ 407 |     |     //     );
+ 408 |     |     //     uint balanceBefore = IERC20(path[path.length - 1]).balanceOf(to);
+ 409 |     |     //     _swapSupportingFeeOnTransferTokens(path, to);
+ 410 |     |     //     require(
+ 411 |     |     //         IERC20(path[path.length - 1]).balanceOf(to) - balanceBefore >= amountOutMin,
+ 412 |     |     //         'UniswapV2Router: INSUFFICIENT_OUTPUT_AMOUNT'
+ 413 |     |     //     );
+ 414 |     |     // }
+ 415 |     |     // function swapExactETHForTokensSupportingFeeOnTransferTokens(
+ 416 |     |     //     uint amountOutMin,
+ 417 |     |     //     address[] calldata path,
+ 418 |     |     //     address to,
+ 419 |     |     //     uint deadline
+ 420 |     |     // )
+ 421 |     |     //     external
+ 422 |     |     //     virtual
+ 423 |     |     //     override
+ 424 |     |     //     payable
+ 425 |     |     //     ensure(deadline)
+ 426 |     |     // {
+ 427 |     |     //     require(path[0] == WETH, 'UniswapV2Router: INVALID_PATH');
+ 428 |     |     //     uint amountIn = msg.value;
+ 429 |     |     //     IWETH(WETH).deposit{value: amountIn}();
+ 430 |     |     //     assert(IWETH(WETH).transfer(UniswapV2Library.pairFor(factory, path[0], path[1]), amountIn));
+ 431 |     |     //     uint balanceBefore = IERC20(path[path.length - 1]).balanceOf(to);
+ 432 |     |     //     _swapSupportingFeeOnTransferTokens(path, to);
+ 433 |     |     //     require(
+ 434 |     |     //         IERC20(path[path.length - 1]).balanceOf(to) - balanceBefore >= amountOutMin,
+ 435 |     |     //         'UniswapV2Router: INSUFFICIENT_OUTPUT_AMOUNT'
+ 436 |     |     //     );
+ 437 |     |     // }
+ 438 |     |     // function swapExactTokensForETHSupportingFeeOnTransferTokens(
+ 439 |     |     //     uint amountIn,
+ 440 |     |     //     uint amountOutMin,
+ 441 |     |     //     address[] calldata path,
+ 442 |     |     //     address to,
+ 443 |     |     //     uint deadline
+ 444 |     |     // )
+ 445 |     |     //     external
+ 446 |     |     //     virtual
+ 447 |     |     //     override
+ 448 |     |     //     ensure(deadline)
+ 449 |     |     // {
+ 450 |     |     //     require(path[path.length - 1] == WETH, 'UniswapV2Router: INVALID_PATH');
+ 451 |     |     //     TransferHelper.safeTransferFrom(
+ 452 |     |     //         path[0], msg.sender, UniswapV2Library.pairFor(factory, path[0], path[1]), amountIn
+ 453 |     |     //     );
+ 454 |     |     //     _swapSupportingFeeOnTransferTokens(path, address(this));
+ 455 |     |     //     uint amountOut = IERC20(WETH).balanceOf(address(this));
+ 456 |     |     //     require(amountOut >= amountOutMin, 'UniswapV2Router: INSUFFICIENT_OUTPUT_AMOUNT');
+ 457 |     |     //     IWETH(WETH).withdraw(amountOut);
+ 458 |     |     //     TransferHelper.safeTransferETH(to, amountOut);
+ 459 |     |     // }
+ 460 |     | 
+ 461 |     |     // **** LIBRARY FUNCTIONS ****
+ 462 |     |     function quote(uint amountA, uint reserveA, uint reserveB) public pure virtual override returns (uint amountB) {
+ 463 |     |         return UniswapV2Library.quote(amountA, reserveA, reserveB);
+ 464 |     |     }
+ 465 |     | 
+ 466 |     |     function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut)
+ 467 |     |         public
+ 468 |     |         pure
+ 469 |     |         virtual
+ 470 |     |         override
+ 471 |     |         returns (uint amountOut)
+ 472 |     |     {
+ 473 |     |         return UniswapV2Library.getAmountOut(amountIn, reserveIn, reserveOut);
+ 474 |     |     }
+ 475 |     | 
+ 476 |     |     function getAmountIn(uint amountOut, uint reserveIn, uint reserveOut)
+ 477 |     |         public
+ 478 |     |         pure
+ 479 |     |         virtual
+ 480 |     |         override
+ 481 |     |         returns (uint amountIn)
+ 482 |     |     {
+ 483 |     |         return UniswapV2Library.getAmountIn(amountOut, reserveIn, reserveOut);
+ 484 |     |     }
+ 485 |     | 
+ 486 |     |     function getAmountsOut(uint amountIn, address[] memory path)
+ 487 |     |         public
+ 488 |     |         view
+ 489 |     |         virtual
+ 490 |     |         override
+ 491 |     |         returns (uint[] memory amounts)
+ 492 |     |     {
+ 493 |     |         return UniswapV2Library.getAmountsOut(factory, amountIn, path);
+ 494 |     |     }
+ 495 |     | 
+ 496 |     |     function getAmountsIn(uint amountOut, address[] memory path)
+ 497 |     |         public
+ 498 |     |         view
+ 499 |     |         virtual
+ 500 |     |         override
+ 501 |     |         returns (uint[] memory amounts)
+ 502 |     |     {
+ 503 |     |         return UniswapV2Library.getAmountsIn(factory, amountOut, path);
+ 504 |     |     }
+ 505 |     | }
+ 506 |     | 
+
+/home/v_lnko/WebstormProjects/Job/Web3/uniswapv2-echidna/v2-periphery/contracts/interfaces/IERC20.sol
+  1 |     | // SDPX-License-Identifier: MIT
+  2 |     | pragma solidity 0.8.13;
+  3 |     | 
+  4 |     | interface IERC20 {
+  5 |     |     event Approval(address indexed owner, address indexed spender, uint value);
+  6 |     |     event Transfer(address indexed from, address indexed to, uint value);
+  7 |     | 
+  8 |     |     function name() external view returns (string memory);
+  9 |     |     function symbol() external view returns (string memory);
+ 10 |     |     function decimals() external view returns (uint8);
+ 11 |     |     function totalSupply() external view returns (uint);
+ 12 |     |     function balanceOf(address owner) external view returns (uint);
+ 13 |     |     function allowance(address owner, address spender) external view returns (uint);
+ 14 |     | 
+ 15 |     |     function approve(address spender, uint value) external returns (bool);
+ 16 |     |     function transfer(address to, uint value) external returns (bool);
+ 17 |     |     function transferFrom(address from, address to, uint value) external returns (bool);
+ 18 |     | }
+ 19 |     | 
+
+/home/v_lnko/WebstormProjects/Job/Web3/uniswapv2-echidna/v2-periphery/contracts/interfaces/IUniswapV2Router01.sol
+  1 |     | // SPDX-License-Identifier: MIT
+  2 |     | pragma solidity 0.8.13;
+  3 |     | interface IUniswapV2Router01 {
+  4 |     |     function factory() external view returns (address);
+  5 |     |     function WETH() external view returns (address);
+  6 |     | 
+  7 |     |     function addLiquidity(
+  8 |     |         address tokenA,
+  9 |     |         address tokenB,
+ 10 |     |         uint amountADesired,
+ 11 |     |         uint amountBDesired,
+ 12 |     |         uint amountAMin,
+ 13 |     |         uint amountBMin,
+ 14 |     |         address to,
+ 15 |     |         uint deadline
+ 16 |     |     ) external returns (uint amountA, uint amountB, uint liquidity);
+ 17 |     |     function addLiquidityETH(
+ 18 |     |         address token,
+ 19 |     |         uint amountTokenDesired,
+ 20 |     |         uint amountTokenMin,
+ 21 |     |         uint amountETHMin,
+ 22 |     |         address to,
+ 23 |     |         uint deadline
+ 24 |     |     ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+ 25 |     |     function removeLiquidity(
+ 26 |     |         address tokenA,
+ 27 |     |         address tokenB,
+ 28 |     |         uint liquidity,
+ 29 |     |         uint amountAMin,
+ 30 |     |         uint amountBMin,
+ 31 |     |         address to,
+ 32 |     |         uint deadline
+ 33 |     |     ) external returns (uint amountA, uint amountB);
+ 34 |     |     function removeLiquidityETH(
+ 35 |     |         address token,
+ 36 |     |         uint liquidity,
+ 37 |     |         uint amountTokenMin,
+ 38 |     |         uint amountETHMin,
+ 39 |     |         address to,
+ 40 |     |         uint deadline
+ 41 |     |     ) external returns (uint amountToken, uint amountETH);
+ 42 |     |     function removeLiquidityWithPermit(
+ 43 |     |         address tokenA,
+ 44 |     |         address tokenB,
+ 45 |     |         uint liquidity,
+ 46 |     |         uint amountAMin,
+ 47 |     |         uint amountBMin,
+ 48 |     |         address to,
+ 49 |     |         uint deadline,
+ 50 |     |         bool approveMax, uint8 v, bytes32 r, bytes32 s
+ 51 |     |     ) external returns (uint amountA, uint amountB);
+ 52 |     |     function removeLiquidityETHWithPermit(
+ 53 |     |         address token,
+ 54 |     |         uint liquidity,
+ 55 |     |         uint amountTokenMin,
+ 56 |     |         uint amountETHMin,
+ 57 |     |         address to,
+ 58 |     |         uint deadline,
+ 59 |     |         bool approveMax, uint8 v, bytes32 r, bytes32 s
+ 60 |     |     ) external returns (uint amountToken, uint amountETH);
+ 61 |     |     function swapExactTokensForTokens(
+ 62 |     |         uint amountIn,
+ 63 |     |         uint amountOutMin,
+ 64 |     |         address[] calldata path,
+ 65 |     |         address to,
+ 66 |     |         uint deadline
+ 67 |     |     ) external returns (uint[] memory amounts);
+ 68 |     |     function swapTokensForExactTokens(
+ 69 |     |         uint amountOut,
+ 70 |     |         uint amountInMax,
+ 71 |     |         address[] calldata path,
+ 72 |     |         address to,
+ 73 |     |         uint deadline
+ 74 |     |     ) external returns (uint[] memory amounts);
+ 75 |     |     function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline)
+ 76 |     |         external
+ 77 |     |         payable
+ 78 |     |         returns (uint[] memory amounts);
+ 79 |     |     function swapTokensForExactETH(uint amountOut, uint amountInMax, address[] calldata path, address to, uint deadline)
+ 80 |     |         external
+ 81 |     |         returns (uint[] memory amounts);
+ 82 |     |     function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline)
+ 83 |     |         external
+ 84 |     |         returns (uint[] memory amounts);
+ 85 |     |     function swapETHForExactTokens(uint amountOut, address[] calldata path, address to, uint deadline)
+ 86 |     |         external
+ 87 |     |         payable
+ 88 |     |         returns (uint[] memory amounts);
+ 89 |     | 
+ 90 |     |     function quote(uint amountA, uint reserveA, uint reserveB) external pure returns (uint amountB);
+ 91 |     |     function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) external pure returns (uint amountOut);
+ 92 |     |     function getAmountIn(uint amountOut, uint reserveIn, uint reserveOut) external pure returns (uint amountIn);
+ 93 |     |     function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts);
+ 94 |     |     function getAmountsIn(uint amountOut, address[] calldata path) external view returns (uint[] memory amounts);
+ 95 |     | }
+ 96 |     | 
+
+/home/v_lnko/WebstormProjects/Job/Web3/uniswapv2-echidna/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol
+  1 |     | // SPDX-License-Identifier: MIT
+  2 |     | pragma solidity 0.8.13;
+  3 |     | 
+  4 |     | import './IUniswapV2Router01.sol';
+  5 |     | 
+  6 |     | interface IUniswapV2Router02 is IUniswapV2Router01 {
+  7 |     |     function removeLiquidityETHSupportingFeeOnTransferTokens(
+  8 |     |         address token,
+  9 |     |         uint liquidity,
+ 10 |     |         uint amountTokenMin,
+ 11 |     |         uint amountETHMin,
+ 12 |     |         address to,
+ 13 |     |         uint deadline
+ 14 |     |     ) external returns (uint amountETH);
+ 15 |     |     function removeLiquidityETHWithPermitSupportingFeeOnTransferTokens(
+ 16 |     |         address token,
+ 17 |     |         uint liquidity,
+ 18 |     |         uint amountTokenMin,
+ 19 |     |         uint amountETHMin,
+ 20 |     |         address to,
+ 21 |     |         uint deadline,
+ 22 |     |         bool approveMax, uint8 v, bytes32 r, bytes32 s
+ 23 |     |     ) external returns (uint amountETH);
+ 24 |     | 
+ 25 |     |     // function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+ 26 |     |     //     uint amountIn,
+ 27 |     |     //     uint amountOutMin,
+ 28 |     |     //     address[] calldata path,
+ 29 |     |     //     address to,
+ 30 |     |     //     uint deadline
+ 31 |     |     // ) external;
+ 32 |     |     // function swapExactETHForTokensSupportingFeeOnTransferTokens(
+ 33 |     |     //     uint amountOutMin,
+ 34 |     |     //     address[] calldata path,
+ 35 |     |     //     address to,
+ 36 |     |     //     uint deadline
+ 37 |     |     // ) external payable;
+ 38 |     |     // function swapExactTokensForETHSupportingFeeOnTransferTokens(
+ 39 |     |     //     uint amountIn,
+ 40 |     |     //     uint amountOutMin,
+ 41 |     |     //     address[] calldata path,
+ 42 |     |     //     address to,
+ 43 |     |     //     uint deadline
+ 44 |     |     // ) external;
+ 45 |     | }
+ 46 |     | 
+
+/home/v_lnko/WebstormProjects/Job/Web3/uniswapv2-echidna/v2-periphery/contracts/interfaces/IWETH.sol
+  1 |     | // SDPX-License-Identifier: MIT
+  2 |     | pragma solidity 0.8.13;
+  3 |     | 
+  4 |     | interface IWETH {
+  5 |     |     function deposit() external payable;
+  6 |     |     function transfer(address to, uint value) external returns (bool);
+  7 |     |     function withdraw(uint) external;
+  8 |     | }
+  9 |     | 
+
+/home/v_lnko/WebstormProjects/Job/Web3/uniswapv2-echidna/v2-periphery/contracts/libraries/UniswapV2Library.sol
+  1 |     | // SPDX-License-Identifier: MIT
+  2 |     | pragma solidity 0.8.13;
+  3 |     | 
+  4 |     | import "../test/IUniswapV2Pair.sol";
+  5 |     | 
+  6 |     | library UniswapV2Library {
+  7 |     | 
+  8 |     |     // returns sorted token addresses, used to handle return values from pairs sorted in this order
+  9 |     |     function sortTokens(address tokenA, address tokenB) internal pure returns (address token0, address token1) {
+ 10 |     |         require(tokenA != tokenB, 'UniswapV2Library: IDENTICAL_ADDRESSES');
+ 11 |     |         (token0, token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+ 12 |     |         require(token0 != address(0), 'UniswapV2Library: ZERO_ADDRESS');
+ 13 |     |     }
+ 14 |     | 
+ 15 |     |     // calculates the CREATE2 address for a pair without making any external calls
+ 16 |     |     function pairFor(address factory, address tokenA, address tokenB) internal pure returns (address pair) {
+ 17 |     |         (address token0, address token1) = sortTokens(tokenA, tokenB);
+ 18 |     |         pair = address(uint160(uint(keccak256(abi.encodePacked(
+ 19 |     |                 "0xff",
+ 20 |     |                 factory,
+ 21 |     |                 keccak256(abi.encodePacked(token0, token1)),
+ 22 |     |                 hex'0d8dfb1487e307d306de35d646644fe117ce584746770a743ccb761636daa6e4' // init code hash
+ 23 |     |             )))));
+ 24 |     |     }
+ 25 |     | 
+ 26 |     |     // fetches and sorts the reserves for a pair
+ 27 |     |     function getReserves(address factory, address tokenA, address tokenB) internal view returns (uint reserveA, uint reserveB) {
+ 28 |     |         (address token0,) = sortTokens(tokenA, tokenB);
+ 29 |     |         (uint reserve0, uint reserve1,) = IUniswapV2Pair(pairFor(factory, tokenA, tokenB)).getReserves();
+ 30 |     |         (reserveA, reserveB) = tokenA == token0 ? (reserve0, reserve1) : (reserve1, reserve0);
+ 31 |     |     }
+ 32 |     | 
+ 33 |     |     // given some amount of an asset and pair reserves, returns an equivalent amount of the other asset
+ 34 |     |     function quote(uint amountA, uint reserveA, uint reserveB) internal pure returns (uint amountB) {
+ 35 |     |         require(amountA > 0, 'UniswapV2Library: INSUFFICIENT_AMOUNT');
+ 36 |     |         require(reserveA > 0 && reserveB > 0, 'UniswapV2Library: INSUFFICIENT_LIQUIDITY');
+ 37 |     |         amountB = (amountA* reserveB) / reserveA;
+ 38 |     |     }
+ 39 |     | 
+ 40 |     |     // given an input amount of an asset and pair reserves, returns the maximum output amount of the other asset
+ 41 |     |     function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) internal pure returns (uint amountOut) {
+ 42 |     |         require(amountIn > 0, 'UniswapV2Library: INSUFFICIENT_INPUT_AMOUNT');
+ 43 |     |         require(reserveIn > 0 && reserveOut > 0, 'UniswapV2Library: INSUFFICIENT_LIQUIDITY');
+ 44 |     |         uint amountInWithFee = amountIn * 997;
+ 45 |     |         uint numerator = amountInWithFee * reserveOut;
+ 46 |     |         uint denominator = (reserveIn* 1000) + (amountInWithFee);
+ 47 |     |         amountOut = numerator / denominator;
+ 48 |     |     }
+ 49 |     | 
+ 50 |     |     // given an output amount of an asset and pair reserves, returns a required input amount of the other asset
+ 51 |     |     function getAmountIn(uint amountOut, uint reserveIn, uint reserveOut) internal pure returns (uint amountIn) {
+ 52 |     |         require(amountOut > 0, 'UniswapV2Library: INSUFFICIENT_OUTPUT_AMOUNT');
+ 53 |     |         require(reserveIn > 0 && reserveOut > 0, 'UniswapV2Library: INSUFFICIENT_LIQUIDITY');
+ 54 |     |         uint numerator = reserveIn * amountOut *1000;
+ 55 |     |         uint denominator = (reserveOut - amountOut) * 997;
+ 56 |     |         amountIn = (numerator / denominator) + 1;
+ 57 |     |     }
+ 58 |     | 
+ 59 |     |     // performs chained getAmountOut calculations on any number of pairs
+ 60 |     |     function getAmountsOut(address factory, uint amountIn, address[] memory path) internal view returns (uint[] memory amounts) {
+ 61 |     |         require(path.length >= 2, 'UniswapV2Library: INVALID_PATH');
+ 62 |     |         amounts = new uint[](path.length);
+ 63 |     |         amounts[0] = amountIn;
+ 64 |     |         for (uint i; i < path.length - 1; i++) {
+ 65 |     |             (uint reserveIn, uint reserveOut) = getReserves(factory, path[i], path[i + 1]);
+ 66 |     |             amounts[i + 1] = getAmountOut(amounts[i], reserveIn, reserveOut);
+ 67 |     |         }
+ 68 |     |     }
+ 69 |     | 
+ 70 |     |     // performs chained getAmountIn calculations on any number of pairs
+ 71 |     |     function getAmountsIn(address factory, uint amountOut, address[] memory path) internal view returns (uint[] memory amounts) {
+ 72 |     |         require(path.length >= 2, 'UniswapV2Library: INVALID_PATH');
+ 73 |     |         amounts = new uint[](path.length);
+ 74 |     |         amounts[amounts.length - 1] = amountOut;
+ 75 |     |         for (uint i = path.length - 1; i > 0; i--) {
+ 76 |     |             (uint reserveIn, uint reserveOut) = getReserves(factory, path[i - 1], path[i]);
+ 77 |     |             amounts[i - 1] = getAmountIn(amounts[i], reserveIn, reserveOut);
+ 78 |     |         }
+ 79 |     |     }
+ 80 |     | }
+ 81 |     | 
+
+/home/v_lnko/WebstormProjects/Job/Web3/uniswapv2-echidna/v2-periphery/contracts/test/EchidnaUniV2Tester.sol
+   1 |     | //SPDX-License-Identifier: MIT
+   2 |     | pragma solidity 0.8.13;
+   3 |     | import "./Setup.sol";
+   4 | *r  | 
+   5 |     | contract EchidnaTest is Setup {
+   6 |     | 
+   7 |     |     // 1 invariant: Providing liquidity increases invariant
+   8 |     |     // x*y = k => increasing x and y increases k!
+   9 | *r  |     function testProvideLiquidity(uint amount1, uint amount2) external {
+  10 |     |     
+  11 | *r  |         if(!completed) {
+  12 |     |             // Pre-conditions: we gotta have 1000 as MINIMUM_LIQUIDITY
+  13 | *   |             amount1 = _between(amount1, 1000, ~uint(0));
+  14 | *   |             amount2 = _between(amount2, 1000, ~uint(0));
+  15 | *   |             _mintTokens(amount1, amount2);
+  16 |     |         }
+  17 | *r  |         uint lpTokenBalanceBefore = pair.balanceOf(address(user));
+  18 | *r  |         (uint reserve0Before, uint reserve1Before,) = pair.getReserves();
+  19 | *r  |         uint kBefore = reserve0Before * reserve1Before; // Solidity ^0.6.0, it might create an overflow/underflow, but since we use uint112/uint112 => uint112 * uint112 = uint224<uint256, it's not gonna happen
+  20 |     | 
+  21 | *r  |         (bool success,) = user.proxy(address(testToken1), abi.encodeWithSelector(testToken1.transfer.selector, address(pair), amount1));
+  22 | *r  |         (bool success1,) = user.proxy(address(testToken2), abi.encodeWithSelector(testToken2.transfer.selector, address(pair), amount2));
+  23 | *r  |         require(success && success1);
+  24 |     | 
+  25 |     |         // Actions. Adding liquidity
+  26 | *   |         (bool success2, ) = user.proxy(address(pair), abi.encodeWithSelector(bytes4(keccak256("mint(address)")), address(user)));
+  27 |     | 
+  28 |     |         // Post-conditions
+  29 | *   |         if(success2) {
+  30 |     | 
+  31 | *   |             uint lpTokenBalanceAfter = pair.balanceOf(address(user));
+  32 | *   |             (uint reserve0After, uint reserve1After,) = pair.getReserves();
+  33 | *   |             uint kAfter = reserve0After * reserve1After;
+  34 |     | 
+  35 | *   |             assert(lpTokenBalanceBefore < lpTokenBalanceAfter);
+  36 | *   |             assert(kBefore < kAfter);
+  37 |     | 
+  38 |     |         }
+  39 |     |     }
+  40 | *r  |     function testSwap(uint amount1, uint amount2) external {
+  41 |     |         // Pre-conditions:
+  42 | *r  |         if(!completed) {
+  43 | r   |             _mintTokens(amount1, amount2);
+  44 |     | 
+  45 |     |         }
+  46 | *r  |         require(pair.balanceOf(address(user)) > 0); // there is liquidity
+  47 | *   |         pair.sync(); // match the balances with the reserves
+  48 |     | 
+  49 |     |         //Call:
+  50 | *   |         (bool success1,) = user.proxy(address(pair), abi.encodeWithSelector(pair.swap.selector, amount1, amount2, address(user), ""));
+  51 |     | 
+  52 |     |         // Post-condition
+  53 | *   |         assert(!success1); // call should never succeed
+  54 |     |     }
+  55 |     |     
+  56 |     | }
+  57 |     | 
+  58 |     | contract EchidnaUniV2Tester is Setup {
+  59 |     |     
+  60 |     |     event logUints(uint kBefore, uint kAfter);
+  61 |     |     function testProvideLiquidityInvariants(uint amount1, uint amount2) public {
+  62 |     |         //PRECONDITIONS:
+  63 |     |         amount1 = _between(amount1, 1000, ~uint(0));
+  64 |     |         amount2 = _between(amount2, 1000, ~uint(0));
+  65 |     |         if(!completed) {
+  66 |     |             _mintTokens(amount1,amount2);
+  67 |     |         }
+  68 |     |         
+  69 |     |         uint pairBalanceBefore = pair.balanceOf(address(user));
+  70 |     |         
+  71 |     |         (uint reserve1Before, uint reserve2Before) = UniswapV2Library.getReserves(address(factory), address(testToken1), address(testToken2));
+  72 |     |         
+  73 |     |         uint kBefore = reserve1Before * reserve2Before;
+  74 |     |        
+  75 |     |         //CALL:
+  76 |     |         
+  77 |     |         (bool success, ) = user.proxy(address(router),abi.encodeWithSelector(router.addLiquidity.selector, address(testToken1), address(testToken2), amount1, amount2, 0, 0, address(user), ~uint(0)));
+  78 |     |         
+  79 |     |         //POSTCONDITIONS
+  80 |     |        
+  81 |     |         if (success) {
+  82 |     |             (uint reserve1After, uint reserve2After) = UniswapV2Library.getReserves(address(factory), address(testToken1), address(testToken2));
+  83 |     |             uint pairBalanceAfter = pair.balanceOf(address(user));
+  84 |     |             uint kAfter = reserve1After*reserve2After;
+  85 |     |             assert(kBefore < kAfter);
+  86 |     |             assert(pairBalanceBefore < pairBalanceAfter);
+  87 |     |         }
+  88 |     |        
+  89 |     |         
+  90 |     |     }
+  91 |     |    
+  92 |     |     function testSwapTokens(uint swapAmountIn) public {
+  93 |     |        //PRECONDITIONS:
+  94 |     | 
+  95 |     |        if(!completed) {
+  96 |     |             _mintTokens(swapAmountIn,swapAmountIn);
+  97 |     |         }
+  98 |     |         
+  99 |     |         address[] memory path = new address[](2);
+ 100 |     |         path[0] = address(testToken1);
+ 101 |     |         path[1] = address(testToken2);
+ 102 |     | 
+ 103 |     |         uint prevBal1 = UniswapV2ERC20(path[0]).balanceOf(address(user));
+ 104 |     |         uint prevBal2 = UniswapV2ERC20(path[1]).balanceOf(address(user));
+ 105 |     | 
+ 106 |     |         require(prevBal1 > 0);
+ 107 |     |         swapAmountIn = _between(swapAmountIn, 1, prevBal1);
+ 108 |     |         (uint reserve1Before, uint reserve2Before) = UniswapV2Library.getReserves(address(factory), address(testToken1), address(testToken2));
+ 109 |     |         uint kBefore = reserve1Before * reserve2Before; 
+ 110 |     |         //CALL: 
+ 111 |     |         (bool success, ) = user.proxy(address(router), abi.encodeWithSelector(router.swapExactTokensForTokens.selector, swapAmountIn,0,path,address(user),~uint(0)));
+ 112 |     |         //POSTCONDITIONS:
+ 113 |     |            
+ 114 |     |         if(success) {
+ 115 |     |             uint balance1After = UniswapV2ERC20(path[0]).balanceOf(address(user));
+ 116 |     |             uint balance2After  = UniswapV2ERC20(path[1]).balanceOf(address(user));
+ 117 |     |             (uint reserve1After, uint reserve2After) = UniswapV2Library.getReserves(address(factory), address(testToken1), address(testToken2));
+ 118 |     |             uint kAfter = reserve1After*reserve2After;
+ 119 |     |             emit logUints(kBefore, kAfter);
+ 120 |     |             assert(kBefore <= kAfter); 
+ 121 |     |             assert(prevBal2 < balance2After);
+ 122 |     |             assert(prevBal1 > balance1After);
+ 123 |     |             
+ 124 |     |         }
+ 125 |     |     }
+ 126 |     | 
+ 127 |     |     function testRemoveLiquidityInvariants(uint lpAmount) public {
+ 128 |     |         //PRECONDITIONS:
+ 129 |     | 
+ 130 |     |         uint pairBalanceBefore = pair.balanceOf(address(user));
+ 131 |     |         //user needs some LP tokens to burn
+ 132 |     |         require(pairBalanceBefore > 0);
+ 133 |     |         lpAmount = _between(lpAmount, 1, pairBalanceBefore);
+ 134 |     |         
+ 135 |     |         (uint reserve1Before, uint reserve2Before) = UniswapV2Library.getReserves(address(factory), address(testToken1), address(testToken2));
+ 136 |     |         //need to provide more than min liquidity
+ 137 |     |         uint kBefore = reserve1Before * reserve2Before;
+ 138 |     |        (bool success1,) = user.proxy(address(pair),abi.encodeWithSelector(pair.approve.selector,address(router), ~uint(0)));
+ 139 |     |         require(success1);
+ 140 |     |         //CALL:
+ 141 |     |         
+ 142 |     |         (bool success, ) = user.proxy(address(router),abi.encodeWithSelector(router.removeLiquidity.selector, address(testToken1), address(testToken2),lpAmount, 0, 0, address(user), ~uint(0)));
+ 143 |     |         
+ 144 |     |         //POSTCONDITIONS
+ 145 |     |         
+ 146 |     |         if (success) {
+ 147 |     |             (uint reserve1After, uint reserve2After) = UniswapV2Library.getReserves(address(factory), address(testToken1), address(testToken2));
+ 148 |     |             uint pairBalanceAfter = pair.balanceOf(address(user));
+ 149 |     |             uint kAfter = reserve1After*reserve2After;
+ 150 |     |             assert(kBefore > kAfter);
+ 151 |     |             assert(pairBalanceBefore > pairBalanceAfter);
+ 152 |     |         }
+ 153 |     |     }
+ 154 |     | }
+
+/home/v_lnko/WebstormProjects/Job/Web3/uniswapv2-echidna/v2-periphery/contracts/test/IERC20.sol
+  1 |     | // SPDX-License-Identifier: MIT
+  2 |     | pragma solidity 0.8.13;
+  3 |     | 
+  4 |     | interface IERC20 {
+  5 |     |     event Approval(address indexed owner, address indexed spender, uint value);
+  6 |     |     event Transfer(address indexed from, address indexed to, uint value);
+  7 |     | 
+  8 |     |     function name() external view returns (string memory);
+  9 |     |     function symbol() external view returns (string memory);
+ 10 |     |     function decimals() external view returns (uint8);
+ 11 |     |     function totalSupply() external view returns (uint);
+ 12 |     |     function balanceOf(address owner) external view returns (uint);
+ 13 |     |     function allowance(address owner, address spender) external view returns (uint);
+ 14 |     | 
+ 15 |     |     function approve(address spender, uint value) external returns (bool);
+ 16 |     |     function transfer(address to, uint value) external returns (bool);
+ 17 |     |     function transferFrom(address from, address to, uint value) external returns (bool);
+ 18 |     | }
+ 19 |     | 
+
+/home/v_lnko/WebstormProjects/Job/Web3/uniswapv2-echidna/v2-periphery/contracts/test/IUniswapV2Callee.sol
+ 1 |     | // SPDX-License-Identifier: MIT
+ 2 |     | pragma solidity 0.8.13;
+ 3 |     | 
+ 4 |     | interface IUniswapV2Callee {
+ 5 |     |     function uniswapV2Call(address sender, uint amount0, uint amount1, bytes calldata data) external;
+ 6 |     | }
+ 7 |     | 
+
+/home/v_lnko/WebstormProjects/Job/Web3/uniswapv2-echidna/v2-periphery/contracts/test/IUniswapV2ERC20.sol
+  1 |     | // SPDX-License-Identifier: MIT
+  2 |     | pragma solidity 0.8.13;
+  3 |     | 
+  4 |     | interface IUniswapV2ERC20 {
+  5 |     |     event Approval(address indexed owner, address indexed spender, uint value);
+  6 |     |     event Transfer(address indexed from, address indexed to, uint value);
+  7 |     | 
+  8 |     |     function name() external pure returns (string memory);
+  9 |     |     function symbol() external pure returns (string memory);
+ 10 |     |     function decimals() external pure returns (uint8);
+ 11 |     |     function totalSupply() external view returns (uint);
+ 12 |     |     function balanceOf(address owner) external view returns (uint);
+ 13 |     |     function allowance(address owner, address spender) external view returns (uint);
+ 14 |     | 
+ 15 |     |     function approve(address spender, uint value) external returns (bool);
+ 16 |     |     function transfer(address to, uint value) external returns (bool);
+ 17 |     |     function transferFrom(address from, address to, uint value) external returns (bool);
+ 18 |     | 
+ 19 |     |     function DOMAIN_SEPARATOR() external view returns (bytes32);
+ 20 |     |     function PERMIT_TYPEHASH() external pure returns (bytes32);
+ 21 |     |     function nonces(address owner) external view returns (uint);
+ 22 |     | 
+ 23 |     |     function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external;
+ 24 |     | }
+ 25 |     | 
+
+/home/v_lnko/WebstormProjects/Job/Web3/uniswapv2-echidna/v2-periphery/contracts/test/IUniswapV2Factory.sol
+  1 |     | // SPDX-License-Identifier: MIT
+  2 |     | pragma solidity 0.8.13;
+  3 |     | 
+  4 |     | interface IUniswapV2Factory {
+  5 |     |     event PairCreated(address indexed token0, address indexed token1, address pair, uint);
+  6 |     | 
+  7 |     |     function feeTo() external view returns (address);
+  8 |     |     function feeToSetter() external view returns (address);
+  9 |     | 
+ 10 |     |     function getPair(address tokenA, address tokenB) external view returns (address pair);
+ 11 |     |     function allPairs(uint) external view returns (address pair);
+ 12 |     |     function allPairsLength() external view returns (uint);
+ 13 |     | 
+ 14 |     |     function createPair(address tokenA, address tokenB) external returns (address pair);
+ 15 |     | 
+ 16 |     |     function setFeeTo(address) external;
+ 17 |     |     function setFeeToSetter(address) external;
+ 18 |     | }
+ 19 |     | 
+
+/home/v_lnko/WebstormProjects/Job/Web3/uniswapv2-echidna/v2-periphery/contracts/test/IUniswapV2Pair.sol
+  1 |     | // SPDX-License-Identifier: MIT
+  2 |     | pragma solidity 0.8.13;
+  3 |     | import "./IUniswapV2ERC20.sol";
+  4 |     | 
+  5 |     | interface IUniswapV2Pair is IUniswapV2ERC20 {
+  6 |     | 
+  7 |     |     event Mint(address indexed sender, uint amount0, uint amount1);
+  8 |     |     event Burn(address indexed sender, uint amount0, uint amount1, address indexed to);
+  9 |     |     event Swap(
+ 10 |     |         address indexed sender,
+ 11 |     |         uint amount0In,
+ 12 |     |         uint amount1In,
+ 13 |     |         uint amount0Out,
+ 14 |     |         uint amount1Out,
+ 15 |     |         address indexed to
+ 16 |     |     );
+ 17 |     |     event Sync(uint112 reserve0, uint112 reserve1);
+ 18 |     | 
+ 19 |     |     function MINIMUM_LIQUIDITY() external pure returns (uint);
+ 20 |     |     function factory() external view returns (address);
+ 21 |     |     function token0() external view returns (address);
+ 22 |     |     function token1() external view returns (address);
+ 23 |     |     function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+ 24 |     |     function price0CumulativeLast() external view returns (uint);
+ 25 |     |     function price1CumulativeLast() external view returns (uint);
+ 26 |     |     function kLast() external view returns (uint);
+ 27 |     | 
+ 28 |     |     function mint(address to) external returns (uint liquidity);
+ 29 |     |     function burn(address to) external returns (uint amount0, uint amount1);
+ 30 |     |     function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;
+ 31 |     |     function skim(address to) external;
+ 32 |     |     function sync() external;
+ 33 |     | 
+ 34 |     |     function initialize(address, address) external;
+ 35 |     | }
+ 36 |     | 
+
+/home/v_lnko/WebstormProjects/Job/Web3/uniswapv2-echidna/v2-periphery/contracts/test/Math.sol
+  1 |     | // SPDX-License-Identifier: MIT
+  2 |     | pragma solidity 0.8.13;
+  3 |     | 
+  4 |     | // a library for performing various math operations
+  5 |     | 
+  6 |     | library Math {
+  7 |     |     function min(uint x, uint y) internal pure returns (uint z) {
+  8 |     |         z = x < y ? x : y;
+  9 |     |     }
+ 10 |     | 
+ 11 |     |     // babylonian method (https://en.wikipedia.org/wiki/Methods_of_computing_square_roots#Babylonian_method)
+ 12 | *   |     function sqrt(uint y) internal pure returns (uint z) {
+ 13 | *   |         if (y > 3) {
+ 14 | *   |             z = y;
+ 15 | *   |             uint x = y / 2 + 1;
+ 16 | *   |             while (x < z) {
+ 17 | *   |                 z = x;
+ 18 | *   |                 x = (y / x + x) / 2;
+ 19 |     |             }
+ 20 |     |         } else if (y != 0) {
+ 21 |     |             z = 1;
+ 22 |     |         }
+ 23 |     |     }
+ 24 |     | }
+ 25 |     | 
+
+/home/v_lnko/WebstormProjects/Job/Web3/uniswapv2-echidna/v2-periphery/contracts/test/Setup.sol
+  1 |     | // SPDX-License-Identifier: MIT
+  2 |     | pragma solidity 0.8.13;
+  3 |     | 
+  4 |     | import "./UniswapV2Pair.sol";
+  5 |     | import "./UniswapV2ERC20.sol";
+  6 |     | import "./UniswapV2Factory.sol";
+  7 |     | import {UniswapV2Library, UniswapV2Router02} from "../UniswapV2Router02.sol";
+  8 | *r  | 
+  9 |     | contract Users {
+ 10 | *r  |   function proxy(address target, bytes memory _calldata)
+ 11 |     |     public
+ 12 | *r  |     returns (bool success, bytes memory returnData)
+ 13 |     |   {
+ 14 | *r  |     (success, returnData) = address(target).call(_calldata);
+ 15 |     |   }
+ 16 |     | }
+ 17 |     | 
+ 18 |     | contract Setup {
+ 19 |     |     UniswapV2ERC20 testToken1; 
+ 20 |     |     UniswapV2ERC20 testToken2;
+ 21 |     |     UniswapV2Pair pair;
+ 22 |     |     UniswapV2Factory factory;
+ 23 |     |     UniswapV2Router02 router;
+ 24 |     |     Users user;
+ 25 |     |     bool completed;
+ 26 |     |    
+ 27 |     |     event Debug(string str);
+ 28 |     |     constructor() {
+ 29 |     |         testToken1 = new UniswapV2ERC20();
+ 30 |     |         testToken2 = new UniswapV2ERC20();
+ 31 |     |         factory = new UniswapV2Factory(address(this)); //this contract will be the fee setter
+ 32 |     |         router = new UniswapV2Router02(address(factory),address(0)); // we don't need to test WETH pairs for now
+ 33 |     |         address pairAddr = factory.createPair(address(testToken1), address(testToken2));
+ 34 |     |         pair = UniswapV2Pair(pairAddr);
+ 35 |     |         user = new Users();
+ 36 |     |     }
+ 37 |     |     
+ 38 | *r  |     function _doApprovals() internal {
+ 39 | *r  |         user.proxy(address(testToken1),abi.encodeWithSelector(testToken1.approve.selector,address(router), ~uint(0)));
+ 40 | *r  |         user.proxy(address(testToken2),abi.encodeWithSelector(testToken2.approve.selector,address(router), ~uint(0)));
+ 41 |     |     }
+ 42 |     | 
+ 43 | *r  |     function _mintTokens(uint amount1, uint amount2) internal {
+ 44 | *r  |         testToken2.mint(address(user), amount2);
+ 45 | *r  |         testToken1.mint(address(user), amount1); 
+ 46 | *r  |         _doApprovals();
+ 47 | *r  |         completed = true;
+ 48 |     |     }
+ 49 |     |     
+ 50 | *   |     function _between(
+ 51 |     |         uint256 val,
+ 52 |     |         uint256 lower,
+ 53 |     |         uint256 upper
+ 54 | *   |     ) internal pure returns (uint256) {
+ 55 | *   |         return lower + (val % (upper - lower + 1));
+ 56 |     |     }
+ 57 |     |     
+ 58 |     | }
+
+/home/v_lnko/WebstormProjects/Job/Web3/uniswapv2-echidna/v2-periphery/contracts/test/UQ112x112.sol
+  1 |     | // SPDX-License-Identifier: MIT
+  2 |     | pragma solidity 0.8.13;
+  3 |     | 
+  4 |     | // a library for handling binary fixed point numbers (https://en.wikipedia.org/wiki/Q_(number_format))
+  5 |     | 
+  6 |     | // range: [0, 2**112 - 1]
+  7 |     | // resolution: 1 / 2**112
+  8 |     | 
+  9 |     | library UQ112x112 {
+ 10 | *   |     uint224 constant Q112 = 2**112;
+ 11 |     | 
+ 12 |     |     // encode a uint112 as a UQ112x112
+ 13 | *   |     function encode(uint112 y) internal pure returns (uint224 z) {
+ 14 | *   |         z = uint224(y) * Q112; // never overflows
+ 15 |     |     }
+ 16 |     | 
+ 17 |     |     // divide a UQ112x112 by a uint112, returning a UQ112x112
+ 18 | *   |     function uqdiv(uint224 x, uint112 y) internal pure returns (uint224 z) {
+ 19 | *   |         z = x / uint224(y);
+ 20 |     |     }
+ 21 |     | }
+ 22 |     | 
+
+/home/v_lnko/WebstormProjects/Job/Web3/uniswapv2-echidna/v2-periphery/contracts/test/UniswapV2ERC20.sol
+  1 |     | // SPDX-License-Identifier: MIT
+  2 |     | pragma solidity 0.8.13;
+  3 |     | 
+  4 |     | import './IUniswapV2ERC20.sol';
+  5 | *r  | 
+  6 |     | contract UniswapV2ERC20 is IUniswapV2ERC20 {
+  7 |     | 
+  8 |     |     string public constant name = 'Uniswap V2';
+  9 |     |     string public constant symbol = 'UNI-V2';
+ 10 |     |     uint8 public constant decimals = 18;
+ 11 |     |     uint  public totalSupply;
+ 12 | *r  |     mapping(address => uint) public balanceOf;
+ 13 |     |     mapping(address => mapping(address => uint)) public allowance;
+ 14 |     | 
+ 15 |     |     bytes32 public override DOMAIN_SEPARATOR;
+ 16 |     |     // keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
+ 17 |     |     bytes32 public constant PERMIT_TYPEHASH = 0x6e71edae12b1b97f4d1f60370fef10105fa2faae0126114a169c64845d6126c9;
+ 18 |     |     mapping(address => uint) public nonces;
+ 19 |     | 
+ 20 |     |     constructor() {
+ 21 |     |         uint chainId;
+ 22 |     |         assembly {
+ 23 |     |             chainId := chainid()
+ 24 |     |         }
+ 25 |     |         DOMAIN_SEPARATOR = keccak256(
+ 26 |     |             abi.encode(
+ 27 |     |                 keccak256('EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)'),
+ 28 |     |                 keccak256(bytes(name)),
+ 29 |     |                 keccak256(bytes('1')),
+ 30 |     |                 chainId,
+ 31 |     |                 address(this)
+ 32 |     |             )
+ 33 |     |         );
+ 34 |     |     }
+ 35 |     | 
+ 36 | *r  |     function _mint(address to, uint value) internal {
+ 37 | *r  |         totalSupply = totalSupply + value;
+ 38 | *r  |         balanceOf[to] = balanceOf[to] + value;
+ 39 | *r  |         emit Transfer(address(0), to, value);
+ 40 |     |     }
+ 41 |     | 
+ 42 |     |     function _burn(address from, uint value) internal {
+ 43 |     |         balanceOf[from] = balanceOf[from] - value;
+ 44 |     |         totalSupply = totalSupply - value;
+ 45 |     |         emit Transfer(from, address(0), value);
+ 46 |     |     }
+ 47 |     | 
+ 48 | *r  |     function _approve(address owner, address spender, uint value) private {
+ 49 | *r  |         allowance[owner][spender] = value;
+ 50 | *r  |         emit Approval(owner, spender, value);
+ 51 |     |     }
+ 52 |     | 
+ 53 | *r  |     function _transfer(address from, address to, uint value) private {
+ 54 | *r  |         balanceOf[from] = balanceOf[from] - value;
+ 55 | *r  |         balanceOf[to] = balanceOf[to] + value;
+ 56 | *r  |         emit Transfer(from, to, value);
+ 57 |     |     }
+ 58 |     | 
+ 59 | *r  |     function approve(address spender, uint value) external returns (bool) {
+ 60 | *r  |         _approve(msg.sender, spender, value);
+ 61 | *r  |         return true;
+ 62 |     |     }
+ 63 |     | 
+ 64 | *r  |     function transfer(address to, uint value) external returns (bool) {
+ 65 | *r  |         _transfer(msg.sender, to, value);
+ 66 | *r  |         return true;
+ 67 |     |     }
+ 68 |     | 
+ 69 |     |     function transferFrom(address from, address to, uint value) external returns (bool) {
+ 70 |     |         if (allowance[from][msg.sender] != ~uint(0)) {
+ 71 |     |             allowance[from][msg.sender] = allowance[from][msg.sender] - value;
+ 72 |     |         }
+ 73 |     |         _transfer(from, to, value);
+ 74 |     |         return true;
+ 75 |     |     }
+ 76 |     | 
+ 77 |     |     function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external {
+ 78 |     |         require(deadline >= block.timestamp, 'UniswapV2: EXPIRED');
+ 79 |     |         bytes32 digest = keccak256(
+ 80 |     |             abi.encodePacked(
+ 81 |     |                 '\x19\x01',
+ 82 |     |                 DOMAIN_SEPARATOR,
+ 83 |     |                 keccak256(abi.encode(PERMIT_TYPEHASH, owner, spender, value, nonces[owner]++, deadline))
+ 84 |     |             )
+ 85 |     |         );
+ 86 |     |         address recoveredAddress = ecrecover(digest, v, r, s);
+ 87 |     |         require(recoveredAddress != address(0) && recoveredAddress == owner, 'UniswapV2: INVALID_SIGNATURE');
+ 88 |     |         _approve(owner, spender, value);
+ 89 |     |     }
+ 90 |     | 
+ 91 |     |     // For testing purposes, must be deleted after testing!
+ 92 | *r  |      function mint(address account, uint amount) external {
+ 93 | *r  |         _mint(account,amount);
+ 94 |     |     }
+ 95 |     | }
+ 96 |     | 
+
+/home/v_lnko/WebstormProjects/Job/Web3/uniswapv2-echidna/v2-periphery/contracts/test/UniswapV2Factory.sol
+  1 |     | // SPDX-License-Identifier: MIT
+  2 |     | pragma solidity 0.8.13;
+  3 |     | 
+  4 |     | import './IUniswapV2Factory.sol';
+  5 |     | import './UniswapV2Pair.sol';
+  6 | *   | 
+  7 |     | contract UniswapV2Factory is IUniswapV2Factory {
+  8 | *   |     address public feeTo;
+  9 |     |     address public feeToSetter;
+ 10 |     | 
+ 11 |     |     mapping(address => mapping(address => address)) public getPair;
+ 12 |     |     address[] public allPairs;
+ 13 |     | 
+ 14 |     |     constructor(address _feeToSetter) {
+ 15 |     |         feeToSetter = _feeToSetter;
+ 16 |     |     }
+ 17 |     | 
+ 18 |     |     function allPairsLength() external view returns (uint) {
+ 19 |     |         return allPairs.length;
+ 20 |     |     }
+ 21 |     | 
+ 22 |     |     function createPair(address tokenA, address tokenB) external returns (address pair) {
+ 23 |     |         require(tokenA != tokenB, 'UniswapV2: IDENTICAL_ADDRESSES');
+ 24 |     |         (address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+ 25 |     |         require(token0 != address(0), 'UniswapV2: ZERO_ADDRESS');
+ 26 |     |         require(getPair[token0][token1] == address(0), 'UniswapV2: PAIR_EXISTS'); // single check is sufficient
+ 27 |     |         bytes memory bytecode = type(UniswapV2Pair).creationCode;
+ 28 |     |         bytes32 salt = keccak256(abi.encodePacked(token0, token1));
+ 29 |     |         assembly {
+ 30 |     |             pair := create2(0, add(bytecode, 32), mload(bytecode), salt)
+ 31 |     |         }
+ 32 |     |         IUniswapV2Pair(pair).initialize(token0, token1);
+ 33 |     |         getPair[token0][token1] = pair;
+ 34 |     |         getPair[token1][token0] = pair; // populate mapping in the reverse direction
+ 35 |     |         allPairs.push(pair);
+ 36 |     |         emit PairCreated(token0, token1, pair, allPairs.length);
+ 37 |     |     }
+ 38 |     | 
+ 39 |     |     function setFeeTo(address _feeTo) external {
+ 40 |     |         require(msg.sender == feeToSetter, 'UniswapV2: FORBIDDEN');
+ 41 |     |         feeTo = _feeTo;
+ 42 |     |     }
+ 43 |     | 
+ 44 |     |     function setFeeToSetter(address _feeToSetter) external {
+ 45 |     |         require(msg.sender == feeToSetter, 'UniswapV2: FORBIDDEN');
+ 46 |     |         feeToSetter = _feeToSetter;
+ 47 |     |     }
+ 48 |     | }
+ 49 |     | 
+
+/home/v_lnko/WebstormProjects/Job/Web3/uniswapv2-echidna/v2-periphery/contracts/test/UniswapV2Pair.sol
+   1 |     | // SPDX-License-Identifier: MIT
+   2 |     | pragma solidity 0.8.13;
+   3 |     | 
+   4 |     | import './IUniswapV2Pair.sol';
+   5 |     | import './UniswapV2ERC20.sol';
+   6 |     | import './Math.sol';
+   7 |     | import './UQ112x112.sol';
+   8 |     | import './IERC20.sol';
+   9 |     | import './IUniswapV2Factory.sol';
+  10 |     | import './IUniswapV2Callee.sol';
+  11 | *r  | 
+  12 |     | contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
+  13 |     |     using UQ112x112 for uint224;
+  14 |     | 
+  15 | *   |     uint public constant MINIMUM_LIQUIDITY = 10**3;
+  16 | *   |     bytes4 private constant SELECTOR = bytes4(keccak256(bytes('transfer(address,uint256)')));
+  17 |     | 
+  18 |     |     address public factory;
+  19 |     |     address public token0;
+  20 |     |     address public token1;
+  21 |     | 
+  22 |     |     uint112 private reserve0;           // uses single storage slot, accessible via getReserves
+  23 |     |     uint112 private reserve1;           // uses single storage slot, accessible via getReserves
+  24 |     |     uint32  private blockTimestampLast; // uses single storage slot, accessible via getReserves
+  25 |     | 
+  26 |     |     uint public price0CumulativeLast;
+  27 |     |     uint public price1CumulativeLast;
+  28 |     |     uint public kLast; // reserve0 * reserve1, as of immediately after the most recent liquidity event
+  29 |     | 
+  30 |     |     uint private unlocked = 1;
+  31 |     |     modifier lock() {
+  32 | *   |         require(unlocked == 1, 'UniswapV2: LOCKED');
+  33 | *   |         unlocked = 0;
+  34 |     |         _;
+  35 | *   |         unlocked = 1;
+  36 |     |     }
+  37 |     | 
+  38 | *r  |     function getReserves() public view returns (uint112 _reserve0, uint112 _reserve1, uint32 _blockTimestampLast) {
+  39 | *r  |         _reserve0 = reserve0;
+  40 | *r  |         _reserve1 = reserve1;
+  41 | *r  |         _blockTimestampLast = blockTimestampLast;
+  42 |     |     }
+  43 |     | 
+  44 | *   |     function _safeTransfer(address token, address to, uint value) private {
+  45 | *   |         (bool success, bytes memory data) = token.call(abi.encodeWithSelector(SELECTOR, to, value));
+  46 | *   |         require(success && (data.length == 0 || abi.decode(data, (bool))), 'UniswapV2: TRANSFER_FAILED');
+  47 |     |     }
+  48 |     | 
+  49 |     |     constructor() {
+  50 |     |         factory = msg.sender;
+  51 |     |     }
+  52 |     | 
+  53 |     |     // called once by the factory at time of deployment
+  54 |     |     function initialize(address _token0, address _token1) external {
+  55 |     |         require(msg.sender == factory, 'UniswapV2: FORBIDDEN'); // sufficient check
+  56 |     |         token0 = _token0;
+  57 |     |         token1 = _token1;
+  58 |     |     }
+  59 |     | 
+  60 |     |     // update reserves and, on the first call per block, price accumulators
+  61 | *   |     function _update(uint balance0, uint balance1, uint112 _reserve0, uint112 _reserve1) private {
+  62 | *   |         require(balance0 <= ~uint112(0) && balance1 <= ~uint112(0), 'UniswapV2: OVERFLOW');
+  63 | *   |         uint32 blockTimestamp = uint32(block.timestamp % 2**32);
+  64 | *   |         uint32 timeElapsed = blockTimestamp - blockTimestampLast; // overflow is desired
+  65 | *   |         if (timeElapsed > 0 && _reserve0 != 0 && _reserve1 != 0) {
+  66 |     |             // * never overflows, and + overflow is desired
+  67 | *   |             price0CumulativeLast += uint(UQ112x112.encode(_reserve1).uqdiv(_reserve0)) * timeElapsed;
+  68 | *   |             price1CumulativeLast += uint(UQ112x112.encode(_reserve0).uqdiv(_reserve1)) * timeElapsed;
+  69 |     |         }
+  70 | *   |         reserve0 = uint112(balance0);
+  71 | *   |         reserve1 = uint112(balance1);
+  72 | *   |         blockTimestampLast = blockTimestamp;
+  73 | *   |         emit Sync(reserve0, reserve1);
+  74 |     |     }
+  75 |     | 
+  76 |     |     // if fee is on, mint liquidity equivalent to 1/6th of the growth in sqrt(k)
+  77 | *   |     function _mintFee(uint112 _reserve0, uint112 _reserve1) private returns (bool feeOn) {
+  78 | *   |         address feeTo = IUniswapV2Factory(factory).feeTo();
+  79 | *   |         feeOn = feeTo != address(0);
+  80 | *   |         uint _kLast = kLast; // gas savings
+  81 | *   |         if (feeOn) {
+  82 |     |             if (_kLast != 0) {
+  83 |     |                 uint rootK = Math.sqrt(uint(_reserve0) * _reserve1);
+  84 |     |                 uint rootKLast = Math.sqrt(_kLast);
+  85 |     |                 if (rootK > rootKLast) {
+  86 |     |                     uint numerator = (totalSupply * rootK) - rootKLast;
+  87 |     |                     uint denominator = (rootK * 5) + rootKLast;
+  88 |     |                     uint liquidity = numerator / denominator;
+  89 |     |                     if (liquidity > 0) _mint(feeTo, liquidity);
+  90 |     |                 }
+  91 |     |             }
+  92 | *   |         } else if (_kLast != 0) {
+  93 |     |             kLast = 0;
+  94 |     |         }
+  95 |     |     }
+  96 |     | 
+  97 |     |     // this low-level function should be called from a contract which performs important safety checks
+  98 | *   |     function mint(address to) external lock returns (uint liquidity) {
+  99 | *   |         (uint112 _reserve0, uint112 _reserve1,) = getReserves(); // gas savings
+ 100 | *   |         uint balance0 = IERC20(token0).balanceOf(address(this));
+ 101 | *   |         uint balance1 = IERC20(token1).balanceOf(address(this));
+ 102 | *   |         uint amount0 = balance0 - _reserve0;
+ 103 | *   |         uint amount1 = balance1 - _reserve1;
+ 104 |     | 
+ 105 | *   |         bool feeOn = _mintFee(_reserve0, _reserve1);
+ 106 | *   |         uint _totalSupply = totalSupply; // gas savings, must be defined here since totalSupply can update in _mintFee
+ 107 | *   |         if (_totalSupply == 0) {
+ 108 | *   |             liquidity = Math.sqrt(amount0 * amount1)-(MINIMUM_LIQUIDITY);
+ 109 | *   |            _mint(address(0), MINIMUM_LIQUIDITY); // permanently lock the first MINIMUM_LIQUIDITY tokens
+ 110 |     |         } else {
+ 111 |     |             liquidity = Math.min(amount0*(_totalSupply) / _reserve0, amount1*(_totalSupply) / _reserve1);
+ 112 |     |         }
+ 113 | *   |         require(liquidity > 0, 'UniswapV2: INSUFFICIENT_LIQUIDITY_MINTED');
+ 114 | *   |         _mint(to, liquidity);
+ 115 |     | 
+ 116 | *   |         _update(balance0, balance1, _reserve0, _reserve1);
+ 117 | *   |         if (feeOn) kLast = uint(reserve0)*(reserve1); // reserve0 and reserve1 are up-to-date
+ 118 | *   |         emit Mint(msg.sender, amount0, amount1);
+ 119 |     |     }
+ 120 |     | 
+ 121 |     |     // this low-level function should be called from a contract which performs important safety checks
+ 122 |     |     function burn(address to) external lock returns (uint amount0, uint amount1) {
+ 123 |     |         (uint112 _reserve0, uint112 _reserve1,) = getReserves(); // gas savings
+ 124 |     |         address _token0 = token0;                                // gas savings
+ 125 |     |         address _token1 = token1;                                // gas savings
+ 126 |     |         uint balance0 = IERC20(_token0).balanceOf(address(this));
+ 127 |     |         uint balance1 = IERC20(_token1).balanceOf(address(this));
+ 128 |     |         uint liquidity = balanceOf[address(this)];
+ 129 |     | 
+ 130 |     |         bool feeOn = _mintFee(_reserve0, _reserve1);
+ 131 |     |         uint _totalSupply = totalSupply; // gas savings, must be defined here since totalSupply can update in _mintFee
+ 132 |     |         amount0 = liquidity * (balance0) / _totalSupply; // using balances ensures pro-rata distribution
+ 133 |     |         amount1 = liquidity * (balance1) / _totalSupply; // using balances ensures pro-rata distribution
+ 134 |     |         require(amount0 > 0 && amount1 > 0, 'UniswapV2: INSUFFICIENT_LIQUIDITY_BURNED');
+ 135 |     |         _burn(address(this), liquidity);
+ 136 |     |         _safeTransfer(_token0, to, amount0);
+ 137 |     |         _safeTransfer(_token1, to, amount1);
+ 138 |     |         balance0 = IERC20(_token0).balanceOf(address(this));
+ 139 |     |         balance1 = IERC20(_token1).balanceOf(address(this));
+ 140 |     | 
+ 141 |     |         _update(balance0, balance1, _reserve0, _reserve1);
+ 142 |     |         if (feeOn) kLast = uint(reserve0) * (reserve1); // reserve0 and reserve1 are up-to-date
+ 143 |     |         emit Burn(msg.sender, amount0, amount1, to);
+ 144 |     |     }
+ 145 |     | 
+ 146 |     |     // this low-level function should be called from a contract which performs important safety checks
+ 147 | *   |     function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external lock {
+ 148 | *   |         require(amount0Out > 0 || amount1Out > 0, 'UniswapV2: INSUFFICIENT_OUTPUT_AMOUNT');
+ 149 | *   |         (uint112 _reserve0, uint112 _reserve1,) = getReserves(); // gas savings
+ 150 | *   |         require(amount0Out < _reserve0 && amount1Out < _reserve1, 'UniswapV2: INSUFFICIENT_LIQUIDITY');
+ 151 |     | 
+ 152 | *   |         uint balance0;
+ 153 | *   |         uint balance1;
+ 154 | *   |         { // scope for _token{0,1}, avoids stack too deep errors
+ 155 | *   |         address _token0 = token0;
+ 156 | *   |         address _token1 = token1;
+ 157 | *   |         require(to != _token0 && to != _token1, 'UniswapV2: INVALID_TO');
+ 158 | *   |         if (amount0Out > 0) _safeTransfer(_token0, to, amount0Out); // optimistically transfer tokens
+ 159 | *   |         if (amount1Out > 0) _safeTransfer(_token1, to, amount1Out); // optimistically transfer tokens
+ 160 | *   |         if (data.length > 0) IUniswapV2Callee(to).uniswapV2Call(msg.sender, amount0Out, amount1Out, data);
+ 161 | *   |         balance0 = IERC20(_token0).balanceOf(address(this));
+ 162 | *   |         balance1 = IERC20(_token1).balanceOf(address(this));
+ 163 |     |         }
+ 164 | *   |         uint amount0In = balance0 > _reserve0 - amount0Out ? balance0 - (_reserve0 - amount0Out) : 0;
+ 165 | *   |         uint amount1In = balance1 > _reserve1 - amount1Out ? balance1 - (_reserve1 - amount1Out) : 0;
+ 166 | *   |         require(amount0In > 0 || amount1In > 0, 'UniswapV2: INSUFFICIENT_INPUT_AMOUNT');
+ 167 |     |         { // scope for reserve{0,1}Adjusted, avoids stack too deep errors
+ 168 |     |         uint balance0Adjusted = (balance0 * (1000))-(amount0In*(3));
+ 169 |     |         uint balance1Adjusted = (balance1 * (1000))-(amount1In*(3));
+ 170 |     |         require(balance0Adjusted*(balance1Adjusted) >= uint(_reserve0)*(_reserve1)*(1000**2), 'UniswapV2: K');
+ 171 |     |         }
+ 172 |     |         _update(balance0, balance1, _reserve0, _reserve1);
+ 173 |     |         emit Swap(msg.sender, amount0In, amount1In, amount0Out, amount1Out, to);
+ 174 |     |     }
+ 175 |     | 
+ 176 |     |     // force balances to match reserves
+ 177 |     |     function skim(address to) external lock {
+ 178 |     |         address _token0 = token0; // gas savings
+ 179 |     |         address _token1 = token1; // gas savings
+ 180 |     |         _safeTransfer(_token0, to, IERC20(_token0).balanceOf(address(this)) - reserve0);
+ 181 |     |         _safeTransfer(_token1, to, IERC20(_token1).balanceOf(address(this)) - reserve1);
+ 182 |     |     }
+ 183 |     | 
+ 184 |     |     // force reserves to match balances
+ 185 | *   |     function sync() external lock {
+ 186 | *   |         _update(IERC20(token0).balanceOf(address(this)), IERC20(token1).balanceOf(address(this)), reserve0, reserve1);
+ 187 |     |     }
+ 188 |     | }
+ 189 |     | 
+
